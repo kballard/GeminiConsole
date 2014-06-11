@@ -166,6 +166,21 @@ local function loadAndEval(source)
 	return handleResults(pcall(chunk))
 end
 
+-- calls append(string) with each result
+-- If there are no results, the function isn't called
+local function inspectResults(append, ...)
+	local inspectopts = { depth = 2 }
+	for i = 1, select('#', ...) do
+		local val = select(i, ...)
+		if type(val) == "userdata" then
+			val = tostring(val) .. ", <metatable> = " .. inspect(getmetatable(val), inspectopts)
+		else
+			val = inspect(val, inspectopts)
+		end
+		append(("[%d] = %s"):format(i, val))
+	end
+end
+
 -- Evaluate Lua script and debug-print the output.
 -- If there are no arguments, show the console instead
 function GeminiConsole:OnSlashLua(slashName, args)
@@ -174,11 +189,14 @@ function GeminiConsole:OnSlashLua(slashName, args)
 	else
 		local function handleResults(status, ...)
 			if status and select('#', ...) > 0 then
-				local t = {}
+				local s = ""
 				for i = 1, select('#', ...) do
-					table.insert(t, tostring(select(i, ...)))
+					if i > 1 then
+						s = s .. " "
+					end
+					s = s .. tostring(select(i, ...))
 				end
-				Print(table.concat(t, ' '))
+				Print(s)
 			end
 		end
 		
@@ -194,15 +212,10 @@ function GeminiConsole:OnSlashDump(slashName, args)
 			if select('#', ...) == 0 then
 				table.insert(lines, "[no results]")
 			else
-				for i = 1, select('#', ...) do
-					local val = select(i, ...)
-					if val == nil then
-						val = ""
-					else
-						val = inspect(val, { depth=1 })
-					end
-					table.insert(lines, ("[%d] %s"):format(i, val))
+				local function append(val)
+					table.insert(lines, val)
 				end
+				inspectResults(append, ...)
 			end
 			Print(table.concat(lines, "\n"))
 		end
@@ -424,8 +437,7 @@ function GeminiConsole:Submit(strText, bEcho)
 
 	-- Check for special commands
 
-	-- Flag for beginning with "="
-	local isEcho = false
+	local isExpr, isInspect = false, false
 
 	-- Help command
 	if sInput == "help" then
@@ -453,37 +465,8 @@ function GeminiConsole:Submit(strText, bEcho)
 
 	-- "inspect" special command
 	elseif LuaUtils:StartsWith(sInput, "inspect ") then
-		sInput = string.gsub(sInput, "inspect ", "return ")		-- trick to evalutate expressions. lua.c does the same thing.
-
-		--local inspectVar = _G[sInput]		-- Kind of a hack. Looks for global variables
-
-		-- Parse
-		local inspectLoadResult, inspectLoadError = loadstring(sInput)
-
-		-- Execute
-		if inspectLoadResult == nil or inspectLoadError then		-- Parse error
-			self:Append("Error parsing expression:", kstrColorError)
-			self:Append(string.gsub(sInput, "return ", ""), kstrColorError)
-		else
-
-			-- Run code in protected mode to catch runtime errors
-			local status, inspectCallResult = pcall(inspectLoadResult)
-
-			if status == false then					-- Execute error
-				self:Append("Error evaluating expression:", kstrColorError)
-				self:Append(inspectCallResult)
-			else
-				-- Use metatable for userdata
-				if type(inspectCallResult) == "userdata" then
-					inspectCallResult = getmetatable(inspectCallResult)
-				end
-				self:Append(inspect(inspectCallResult), kstrColorInspect)		-- Inspect and print
-			end
-		end
-
-
-		self.wndInput:SetFocus()
-		return
+		sInput = string.sub(sInput, 9)
+		isExpr, isInspect = true, true
 
 	-- Slash Commands
 	elseif LuaUtils:StartsWith(sInput, "/") then
@@ -493,28 +476,51 @@ function GeminiConsole:Submit(strText, bEcho)
 
 	-- Expression evaluation. Input starting with "=" will be evaluated and the result printed as a string.
 	elseif LuaUtils:StartsWith(sInput, "=") then
-		sInput = "return " .. string.sub(sInput, 2)			-- trick to evalutate expressions. lua.c does the same thing.
-		isEcho = true
+		sInput = string.sub(sInput, 2)
+		isExpr = true
 	end
 
 	-- Parse
-	local result, loadError = loadstring(sInput)
+	local sSource = sInput
+	if isExpr then
+		sSource = "return " .. sSource
+	end
+	local result, loadError = loadstring(sSource, sInput)
 
 	-- Execute
 	if result == nil or loadError then		-- Parse error
-		self:Append("Error parsing statement:", kstrColorError)
+		self:Append("Error parsing expression:", kstrColorError)
 		self:Append(loadError, kstrColorError)
 	else
 
-		-- Run code in protected mode to catch runtime errors
-		local status, callResult = pcall(result)
-
-		if status == false then			-- Execute error
-			self:Append("Error executing statement:", kstrColorError)
-			self:Append(callResult, kstrColorError)
-		elseif isEcho then
-			self:Append(callResult)		-- Print result if "="
+		-- Modify the environment to define a useful print()
+		local function console_print(...)
+			local s = ""
+			for i = 1, select('#', ...) do
+				if i > 1 then
+					s = s .. " "
+				end
+				s = s .. tostring(select(i, ...))
+			end
+			self:Append(s)
 		end
+		local env = { print = console_print }
+		setmetatable(env, { __index = _G })
+		setfenv(result, env)
+
+		local function handleResults(status, ...)
+			if status == false then			-- Execute error
+				self:Append("Error executing expression:", kstrColorError)
+				self:Append(select(1, ...), kstrColorError)
+			elseif isInspect then
+				inspectResults(function(val) self:Append(val, kstrColorInspect) end, ...)
+			elseif isExpr and select('#', ...) > 0 then
+				-- Pretend the expression was wrapped in print()
+				console_print(...)
+			end
+		end
+		-- Run code in protected mode to catch runtime errors
+		handleResults(pcall(result))
 	end
 
 	-- Refocus the input
