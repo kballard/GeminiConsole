@@ -61,7 +61,7 @@ function GeminiConsole:OnLoad()
 	LuaUtils = Apollo.GetPackage("Drafto:Lib:LuaUtils-1.2").tPackage
 	Queue = Apollo.GetPackage("Drafto:Lib:Queue-1.2").tPackage
 	JScanBot = Apollo.GetAddon("JScanBot")
-
+	
 	-- Line buffer
 	self.lineQueue = Queue.new()
 	Apollo.CreateTimer("LineQueueTimer", 0.001, true)
@@ -74,7 +74,7 @@ function GeminiConsole:OnLoad()
 end
 
 function GeminiConsole:OnDocLoaded()
-
+	
 	-- Load main window
 	self.wndMain = Apollo.LoadForm(self.xmlMain, "GeminiConsoleWindow", nil, self)
 
@@ -93,10 +93,10 @@ function GeminiConsole:OnDocLoaded()
 	self.wndJSBAppend = self.wndMain:FindChild("JSBAppend")
 	
 	-- Register Event Handlers
-	Apollo.RegisterSlashCommand("lua", "ConsoleShowToggle", self)
+	Apollo.RegisterSlashCommand("lua", "OnSlashLua", self)
+	Apollo.RegisterSlashCommand("dump", "OnSlashDump", self)
 	Apollo.RegisterSlashCommand("console", "ConsoleShowToggle", self)
 	Apollo.RegisterEventHandler("GeminiConsole_ButtonClick", "ConsoleShowToggle", self)
-	--Apollo.RegisterSlashCommand("lua", "OnLuaSlashCommand", self)
 	--Apollo.RegisterEventHandler("KeyDown", "OnKeyDown", self)
 
 	-- FPS update timer
@@ -130,7 +130,7 @@ function GeminiConsole:OnDependencyError(strDep, strError)
 	end
 end
 
--- toggle console display (triggered by SlashCommand "/lua" and the GeminiInterface button)
+-- toggle console display (triggered by SlashCommand "/console" and the GeminiInterface button)
 function GeminiConsole:ConsoleShowToggle()
 	if self.wndMain:IsShown() then
 		self.wndMain:Show(false)
@@ -146,11 +146,70 @@ function GeminiConsole:ConsoleShowToggle()
 	end
 end
 
--- on SlashCommand "/lua"
---[[function GeminiConsole:OnLuaSlashCommand()
-	self.wndMain:Show(true) -- show the window
-	self.wndInput:SetFocus()	-- Focus on the text input to start
-end--]]
+-- returns success, value
+local function loadAndEval(source)
+	local chunk, err = loadstring("return " .. source)
+	if chunk == nil then
+		Print("Error loading expression: " .. tostring(err))
+		return false, nil
+	end
+	
+	local function handleResults(status, ...)
+		if not status then
+			local err = ...
+			Print("Error evaluating expression: " .. tostring(err))
+			return false
+		end
+		return true, ...
+	end
+	
+	return handleResults(pcall(chunk))
+end
+
+-- Evaluate Lua script and debug-print the output.
+-- If there are no arguments, show the console instead
+function GeminiConsole:OnSlashLua(slashName, args)
+	if args == "" then
+		self:ConsoleShowToggle()
+	else
+		local function handleResults(status, ...)
+			if status and select('#', ...) > 0 then
+				local t = {}
+				for i = 1, select('#', ...) do
+					table.insert(t, tostring(select(i, ...)))
+				end
+				Print(table.concat(t, ' '))
+			end
+		end
+		
+		handleResults(loadAndEval(args))
+	end
+end
+
+-- Evaluate Lua script and recursively debug-print the output.
+function GeminiConsole:OnSlashDump(slashName, args)
+	local function handleResults(status, ...)
+		if status then
+			local lines = {"Evaluating " .. args}
+			if select('#', ...) == 0 then
+				table.insert(lines, "[no results]")
+			else
+				for i = 1, select('#', ...) do
+					local val = select(i, ...)
+					if val == nil then
+						val = ""
+					else
+						val = inspect(val, { depth=1 })
+					end
+					table.insert(lines, ("[%d] %s"):format(i, val))
+				end
+			end
+			Print(table.concat(lines, "\n"))
+		end
+	end
+	
+	handleResults(loadAndEval(args))
+end
 
 -- Persistence
 function GeminiConsole:OnSave(eLevel)
@@ -304,16 +363,6 @@ function GeminiConsole:AppendHelpText()
 	--self:Append("")
 	self:Append(stars, color2)
 	self:Append("")
-end
-
--- Not working
-function GeminiConsole:OnKeyDown(wndHandler, wndControl, strKeyName, nCode, eModifier)
-	self:Append("OnKeyDown fired")
-end
-
--- Not working
-function GeminiConsole:InputKeyDown(wndHandler, wndControl, strKeyName, nScanCode, nMetakeys)
-	self:Append(strKeyName)
 end
 
 -- Working?
