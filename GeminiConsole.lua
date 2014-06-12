@@ -154,16 +154,14 @@ local function loadAndEval(source)
 		return false, nil
 	end
 	
-	local function handleResults(status, ...)
-		if not status then
-			local err = ...
-			Print("Error evaluating expression: " .. tostring(err))
-			return false
-		end
-		return true, ...
+	local results, n = LuaUtils:Pack(pcall(chunk))
+	local status = results[1]
+	if not status then
+		local err = results[2]
+		Print("Error evaluating expression: " .. tostring(err))
+		return false
 	end
-	
-	return handleResults(pcall(chunk))
+	return true, unpack(results, 2, n)
 end
 
 -- calls append(string) with each result
@@ -187,41 +185,37 @@ function GeminiConsole:OnSlashLua(slashName, args)
 	if args == "" then
 		self:ConsoleShowToggle()
 	else
-		local function handleResults(status, ...)
-			if status and select('#', ...) > 0 then
-				local s = ""
-				for i = 1, select('#', ...) do
-					if i > 1 then
-						s = s .. " "
-					end
-					s = s .. tostring(select(i, ...))
+		local results, n = LuaUtils:Pack(loadAndEval(args))
+		local status = results[1]
+		if status and n > 1 then
+			local s = ""
+			for i = 2, n do
+				if i > 2 then
+					s = s .. " "
 				end
-				Print(s)
+				s = s .. tostring(results[i])
 			end
+			Print(s)
 		end
-		
-		handleResults(loadAndEval(args))
 	end
 end
 
 -- Evaluate Lua script and recursively debug-print the output.
 function GeminiConsole:OnSlashDump(slashName, args)
-	local function handleResults(status, ...)
-		if status then
-			local lines = {"Evaluating " .. args}
-			if select('#', ...) == 0 then
-				table.insert(lines, "[no results]")
-			else
-				local function append(val)
-					table.insert(lines, val)
-				end
-				inspectResults(append, ...)
+	local results, n = LuaUtils:Pack(loadAndEval(args))
+	local status = results[1]
+	if status then
+		local lines = {"Evaluating " .. args}
+		if n <= 1 then
+			table.insert(lines, "[no results]")
+		else
+			local function append(val)
+				table.insert(lines, val)
 			end
-			Print(table.concat(lines, "\n"))
+			inspectResults(append, unpack(results, 2, n))
 		end
+		Print(table.concat(lines, "\n"))
 	end
-	
-	handleResults(loadAndEval(args))
 end
 
 -- Persistence
@@ -508,19 +502,18 @@ function GeminiConsole:Submit(strText, bEcho)
 		setmetatable(env, { __index = _G })
 		setfenv(result, env)
 
-		local function handleResults(status, ...)
-			if status == false then			-- Execute error
-				self:Append("Error executing expression:", kstrColorError)
-				self:Append(select(1, ...), kstrColorError)
-			elseif isInspect then
-				inspectResults(function(val) self:Append(val, kstrColorInspect) end, ...)
-			elseif isExpr and select('#', ...) > 0 then
-				-- Pretend the expression was wrapped in print()
-				console_print(...)
-			end
-		end
 		-- Run code in protected mode to catch runtime errors
-		handleResults(pcall(result))
+		local results, n = LuaUtils:Pack(pcall(result))
+		local status = results[1]
+		if status == false then			-- Execute error
+			self:Append("Error executing expression:", kstrColorError)
+			self:Append(results[2], kstrColorError)
+		elseif isInspect then
+			inspectResults(function(val) self:Append(val, kstrColorInspect) end, unpack(results, 2, n))
+		elseif isExpr and n > 1 then
+			-- Pretend the expression was wrapped in print()
+			console_print(unpack(results, 2, n))
+		end
 	end
 
 	-- Refocus the input
